@@ -9,7 +9,7 @@ use std::{
 
 use bytes::{Buf, BytesMut};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use log::{debug, error};
+use log::{debug, error, warn};
 use nix::sched::CloneFlags;
 
 use crate::{config::Config, packet::Packet};
@@ -72,6 +72,10 @@ impl Server {
                     NaiveDateTime::from_timestamp_opt(secs as i64, nanos as u32).unwrap(),
                     Utc,
                 );
+
+                if sequence != sequence_recv {
+                    warn!("Packet with sequence={} is out of order", sequence);
+                }
 
                 let packet = Packet {
                     sequence_receiver: sequence_recv,

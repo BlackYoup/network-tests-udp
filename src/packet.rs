@@ -14,9 +14,15 @@ pub struct Packet {
 impl Display for Packet {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let diff = self.received_at - self.sent_at;
+        let seq_diff = if self.sequence_sender != self.sequence_receiver {
+            "y"
+        } else {
+            "n"
+        };
         write!(
             f,
-            "recv_at={}, seq_recv={}, sent_at={}, seq_sent={}, size={}, time_ms={}ms, time_ns={}ns, remote={}:{}",
+            "ooo={} recv_at={}, seq_recv={}, sent_at={}, seq_sent={}, size={}, time_ms={}ms, time_ns={}ns, remote={}:{}",
+            seq_diff,
             self.received_at.format("%H:%M:%S%.f"),
             self.sequence_receiver,
             self.sent_at.format("%H:%M:%S%.f"),
