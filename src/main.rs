@@ -8,11 +8,18 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use clap::{value_parser, Arg};
+use clap::{value_parser, Arg, ArgAction};
 use client::Client;
 use config::Config;
 use log::{error, info};
 use server::Server;
+
+#[derive(Debug, PartialEq)]
+enum ProgramRun {
+    Client,
+    Server,
+    Both,
+}
 
 fn main() {
     env_logger::init();
@@ -55,8 +62,19 @@ fn main() {
             Arg::new("network-namespace")
                 .long("network-namespace")
                 .short('n')
-                .help("Network namespace in which the server will listen")
-                .required(true),
+                .help("Network namespace in which the server will listen"),
+        )
+        .arg(
+            Arg::new("client")
+                .long("client")
+                .help("Only run the client")
+                .action(ArgAction::SetTrue),
+        )
+        .arg(
+            Arg::new("server")
+                .long("server")
+                .help("Only run the server")
+                .action(ArgAction::SetTrue),
         )
         .get_matches();
 
@@ -64,7 +82,16 @@ fn main() {
     let packet_size = clap.get_one::<usize>("size").unwrap();
     let remote = clap.get_one::<SocketAddr>("remote").unwrap();
     let output_file = clap.get_one::<String>("output").map(PathBuf::from).unwrap();
-    let network_namespace = clap.get_one::<String>("network-namespace").unwrap();
+    let to_run = match (
+        clap.get_one::<bool>("client").unwrap(),
+        clap.get_one::<bool>("server").unwrap(),
+    ) {
+        (true, true) | (false, false) => ProgramRun::Both,
+        (true, false) => ProgramRun::Client,
+        (false, true) => ProgramRun::Server,
+    };
+
+    let network_namespace = clap.get_one::<String>("network-namespace");
 
     let u64_size = std::mem::size_of::<u64>();
     let min_packet_size = u64_size * 2;
@@ -85,9 +112,18 @@ fn main() {
         std::process::exit(1);
     }
 
-    if !Path::new(&format!("/run/netns/{network_namespace}")).exists() {
-        error!("The network namespace {network_namespace} doesn't exist. Please check the readme");
-        std::process::exit(1);
+    if to_run == ProgramRun::Both {
+        if network_namespace.is_none() {
+            error!("--network-namespace is required when running both client and server at the same time");
+            std::process::exit(1);
+        }
+        let network_namespace = network_namespace.as_ref().unwrap();
+        if !Path::new(&format!("/run/netns/{network_namespace}")).exists() {
+            error!(
+                "The network namespace {network_namespace} doesn't exist. Please check the readme"
+            );
+            std::process::exit(1);
+        }
     }
 
     let config = Config::new(
@@ -95,24 +131,37 @@ fn main() {
         *packet_size,
         *remote,
         output_file,
-        network_namespace.into(),
+        network_namespace.map(|n| n.into()),
     );
 
     info!("Running with config: {:#?}", config);
-    run(config);
+    run(config, to_run);
 }
 
-pub fn run(config: Config) {
-    let client = Client::new(config.clone());
-    let server = Server::new(config);
+fn run(config: Config, to_run: ProgramRun) {
+    let server_thread = if to_run == ProgramRun::Both || to_run == ProgramRun::Server {
+        let server = Server::new(config.clone());
+        Some(std::thread::spawn(move || {
+            server.run();
+        }))
+    } else {
+        None
+    };
 
-    let server_thread = std::thread::spawn(move || {
-        server.run();
-    });
-    let client_thread = std::thread::spawn(move || {
-        client.run();
-    });
+    let client_thread = if to_run == ProgramRun::Both || to_run == ProgramRun::Client {
+        let client = Client::new(config);
+        Some(std::thread::spawn(move || {
+            client.run();
+        }))
+    } else {
+        None
+    };
 
-    server_thread.join().unwrap();
-    client_thread.join().unwrap();
+    if let Some(server_thread) = server_thread {
+        server_thread.join().unwrap();
+    }
+
+    if let Some(client_thread) = client_thread {
+        client_thread.join().unwrap();
+    }
 }

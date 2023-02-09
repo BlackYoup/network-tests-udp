@@ -34,12 +34,14 @@ impl Server {
     }
 
     fn setup_ns(&self) {
-        let file = File::open(format!("/run/netns/{}", self.config.network_namespace))
-            .unwrap_or_else(|_| panic!("{} ns should exist", self.config.network_namespace));
+        if let Some(ns) = &self.config.network_namespace {
+            let file = File::open(format!("/run/netns/{}", ns))
+                .unwrap_or_else(|_| panic!("{} ns should exist", ns));
 
-        let fd = file.as_raw_fd();
-        nix::sched::setns(fd, CloneFlags::CLONE_NEWNET)
-            .expect("Should reschedule thread into namespace");
+            let fd = file.as_raw_fd();
+            nix::sched::setns(fd, CloneFlags::CLONE_NEWNET)
+                .expect("Should reschedule thread into namespace");
+        }
     }
 
     fn run_udp_server(&self, log_tx: Sender<Packet>) -> JoinHandle<()> {

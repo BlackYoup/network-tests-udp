@@ -6,7 +6,7 @@ pub struct Config {
     pub packet_size: usize,
     pub remote: SocketAddr,
     pub output_path: PathBuf,
-    pub network_namespace: String,
+    pub network_namespace: Option<String>,
 }
 
 impl Config {
@@ -15,7 +15,7 @@ impl Config {
         packet_size: usize,
         remote: SocketAddr,
         output_path: PathBuf,
-        network_namespace: String,
+        network_namespace: Option<String>,
     ) -> Config {
         Config {
             packet_rate,
