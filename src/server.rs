@@ -1,10 +1,12 @@
 use std::{
+    collections::HashMap,
     fs::File,
     io::Write,
     net::{SocketAddr, UdpSocket},
     os::fd::AsRawFd,
     sync::mpsc::{channel, Receiver, Sender},
     thread::JoinHandle,
+    time::Instant,
 };
 
 use bytes::{Buf, BytesMut};
@@ -20,6 +22,7 @@ pub struct Server {
 
 pub enum Message {
     Packet(Packet),
+    Lost(u64),
     Reset,
 }
 
@@ -56,8 +59,21 @@ impl Server {
             let mut sequence_recv = 0;
             // Keep the last received remote to detect if the client was restarted
             let mut remote_recv: Option<SocketAddr> = None;
+            let mut loss: HashMap<u64, Instant> = HashMap::new();
 
             loop {
+                loss.retain(|&lost_seq, lost_at| {
+                    if lost_at.elapsed() > std::time::Duration::from_secs(1) {
+                        warn!("Packet with sequence {lost_seq} has been lost");
+                        log_tx.send(Message::Lost(lost_seq)).unwrap();
+                        // Increase our sequence so that subsequent packets are not marked as lost
+                        sequence_recv += 1;
+                        false
+                    } else {
+                        true
+                    }
+                });
+
                 let mut buf: BytesMut = BytesMut::zeroed(65536);
                 let (size, remote) = socket.recv_from(&mut buf).unwrap();
                 let received_at = Utc::now();
@@ -93,10 +109,6 @@ impl Server {
                     }
                 }
 
-                if sequence != sequence_recv {
-                    warn!("Packet with sequence={} is out of order", sequence);
-                }
-
                 let packet = Packet {
                     sequence_receiver: sequence_recv,
                     sequence_sender: sequence,
@@ -106,7 +118,29 @@ impl Server {
                     remote,
                 };
 
-                sequence_recv += 1;
+                if sequence != sequence_recv {
+                    // We just received a packet that was missing, do not treat as lost
+                    if loss.contains_key(&sequence_recv) {
+                        warn!("Packet with sequence={} is out of order", sequence);
+                        loss.remove(&sequence_recv);
+                    } else {
+                        // We lost at least one packet (at least for now), track it
+                        let total_losses: i64 = sequence_recv as i64 - sequence as i64;
+                        if total_losses <= 0 {
+                            unimplemented!("We lost 0 or more than possible?");
+                        }
+
+                        for i in 0..total_losses {
+                            loss.insert(sequence + i as u64, Instant::now());
+                        }
+
+                        // Let's increase or sequence so that following packet do not appear as Out of Order
+                        sequence_recv += total_losses as u64;
+                    }
+                } else {
+                    sequence_recv += 1;
+                }
+
                 log_tx.send(Message::Packet(packet)).unwrap();
             }
         })
@@ -133,6 +167,11 @@ impl Server {
                     }
                     Ok(Message::Reset) => {
                         file.set_len(0).unwrap();
+                    }
+                    Ok(Message::Lost(seq)) => {
+                        let msg = format!("lost=yes, seq_recv={seq}\n");
+                        file.write_all(msg.as_bytes()).unwrap();
+                        file.flush().unwrap();
                     }
                     Err(err) => {
                         error!("Got error while recv() from Channel: {:?}", err);
