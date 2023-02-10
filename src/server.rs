@@ -1,7 +1,7 @@
 use std::{
     fs::File,
     io::Write,
-    net::UdpSocket,
+    net::{SocketAddr, UdpSocket},
     os::fd::AsRawFd,
     sync::mpsc::{channel, Receiver, Sender},
     thread::JoinHandle,
@@ -49,6 +49,8 @@ impl Server {
         std::thread::spawn(move || {
             let socket = UdpSocket::bind(config.remote).unwrap();
             let mut sequence_recv = 0;
+            // Keep the last received remote to detect if the client was restarted
+            let mut remote_recv: Option<SocketAddr> = None;
 
             loop {
                 let mut buf: BytesMut = BytesMut::zeroed(config.packet_size);
@@ -72,6 +74,18 @@ impl Server {
                     NaiveDateTime::from_timestamp_opt(secs as i64, nanos as u32).unwrap(),
                     Utc,
                 );
+
+                if sequence == 0 {
+                    if let Some(old_remote) = remote_recv {
+                        if old_remote.port() != remote.port() {
+                            // Our client got restarted, reset our sequence
+                            sequence_recv = 0;
+                            remote_recv = Some(remote);
+                        }
+                    } else {
+                        remote_recv = Some(remote);
+                    }
+                }
 
                 if sequence != sequence_recv {
                     warn!("Packet with sequence={} is out of order", sequence);
