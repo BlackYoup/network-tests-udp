@@ -58,7 +58,7 @@ impl Server {
             let mut remote_recv: Option<SocketAddr> = None;
 
             loop {
-                let mut buf: BytesMut = BytesMut::zeroed(config.packet_size);
+                let mut buf: BytesMut = BytesMut::zeroed(65536);
                 let (size, remote) = socket.recv_from(&mut buf).unwrap();
                 let received_at = Utc::now();
                 debug!(
