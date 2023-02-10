@@ -11,7 +11,7 @@ use std::{
 
 use bytes::{Buf, BytesMut};
 use chrono::{DateTime, NaiveDateTime, Utc};
-use log::{debug, error, warn};
+use log::{debug, error, trace, warn};
 use nix::sched::CloneFlags;
 
 use crate::{config::Config, packet::Packet};
@@ -56,7 +56,9 @@ impl Server {
         let config = self.config.clone();
         std::thread::spawn(move || {
             let socket = UdpSocket::bind(config.remote).unwrap();
+            // Expected next sequence
             let mut sequence_recv = 0;
+            let mut total_received_packets = 0;
             // Keep the last received remote to detect if the client was restarted
             let mut remote_recv: Option<SocketAddr> = None;
             let mut loss: HashMap<u64, Instant> = HashMap::new();
@@ -66,8 +68,6 @@ impl Server {
                     if lost_at.elapsed() > std::time::Duration::from_secs(1) {
                         warn!("Packet with sequence {lost_seq} has been lost");
                         log_tx.send(Message::Lost(lost_seq)).unwrap();
-                        // Increase our sequence so that subsequent packets are not marked as lost
-                        sequence_recv += 1;
                         false
                     } else {
                         true
@@ -77,14 +77,8 @@ impl Server {
                 let mut buf: BytesMut = BytesMut::zeroed(65536);
                 let (size, remote) = socket.recv_from(&mut buf).unwrap();
                 let received_at = Utc::now();
-                debug!(
-                    "Received packet: size={}, remote={:?}, content={:?}",
-                    size, remote, buf
-                );
-
-                if size < config.packet_size {
-                    error!("Received packet with length < to what we expect, probably splitted: expected={}, got={}", config.packet_size, size);
-                }
+                debug!("Received packet: size={}, remote={:?}", size, remote);
+                trace!("content={:?}", buf);
 
                 let mut buffer = buf.freeze();
                 let sequence = buffer.get_u64();
@@ -109,8 +103,10 @@ impl Server {
                     }
                 }
 
-                let packet = Packet {
-                    sequence_receiver: sequence_recv,
+                debug!("Packet: sequence={sequence}, sequence_recv={sequence_recv}");
+
+                let mut packet = Packet {
+                    sequence_receiver: total_received_packets,
                     sequence_sender: sequence,
                     received_at,
                     sent_at: date,
@@ -121,25 +117,33 @@ impl Server {
                 if sequence != sequence_recv {
                     // We just received a packet that was missing, do not treat as lost
                     // We don't increase our sequence since we already increased it in the else{} block below
-                    if loss.contains_key(&sequence_recv) {
+                    if loss.contains_key(&sequence) {
                         warn!("Packet with sequence={} is out of order", sequence);
-                        loss.remove(&sequence_recv);
+                        loss.remove(&sequence).unwrap();
                     } else {
                         // Compute the number of losses
                         // If we are here, it means that we received a higher sequence than our current sequence
                         // Otherwise we would have ended up into the previous if{} block
                         let total_losses = sequence - sequence_recv;
+                        debug!("Total losses={total_losses}, sequence={sequence}, sequence_recv={sequence_recv}");
+                        if total_losses > 1_000_000 {
+                            panic!();
+                        }
 
                         for i in 0..total_losses {
-                            loss.insert(sequence + i, Instant::now());
+                            loss.insert(sequence_recv + i, Instant::now());
                         }
 
                         // Let's increase or sequence so that following packet do not appear as Out of Order
                         sequence_recv += total_losses;
+                        packet.sequence_receiver = sequence_recv;
+                        sequence_recv += 1;
                     }
                 } else {
                     sequence_recv += 1;
-                }
+                };
+
+                total_received_packets += 1;
 
                 log_tx.send(Message::Packet(packet)).unwrap();
             }
@@ -148,7 +152,6 @@ impl Server {
 
     fn run_log_server(&self, rx: Receiver<Message>) -> JoinHandle<()> {
         let config = self.config.clone();
-        debug!("Hello?");
         std::thread::spawn(move || {
             let mut file = File::options()
                 .create(true)
