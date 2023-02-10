@@ -18,6 +18,11 @@ pub struct Server {
     config: Config,
 }
 
+pub enum Message {
+    Packet(Packet),
+    Reset,
+}
+
 impl Server {
     pub fn new(config: Config) -> Server {
         Server { config }
@@ -44,7 +49,7 @@ impl Server {
         }
     }
 
-    fn run_udp_server(&self, log_tx: Sender<Packet>) -> JoinHandle<()> {
+    fn run_udp_server(&self, log_tx: Sender<Message>) -> JoinHandle<()> {
         let config = self.config.clone();
         std::thread::spawn(move || {
             let socket = UdpSocket::bind(config.remote).unwrap();
@@ -81,6 +86,7 @@ impl Server {
                             // Our client got restarted, reset our sequence
                             sequence_recv = 0;
                             remote_recv = Some(remote);
+                            log_tx.send(Message::Reset).unwrap();
                         }
                     } else {
                         remote_recv = Some(remote);
@@ -101,12 +107,12 @@ impl Server {
                 };
 
                 sequence_recv += 1;
-                log_tx.send(packet).unwrap();
+                log_tx.send(Message::Packet(packet)).unwrap();
             }
         })
     }
 
-    fn run_log_server(&self, rx: Receiver<Packet>) -> JoinHandle<()> {
+    fn run_log_server(&self, rx: Receiver<Message>) -> JoinHandle<()> {
         let config = self.config.clone();
         debug!("Hello?");
         std::thread::spawn(move || {
@@ -119,11 +125,14 @@ impl Server {
 
             loop {
                 match rx.recv() {
-                    Ok(packet) => {
+                    Ok(Message::Packet(packet)) => {
                         let msg = format!("{packet}\n");
                         debug!("Writing to file {:?}: {}", config.output_path, msg);
                         file.write_all(msg.as_bytes()).unwrap();
                         file.flush().unwrap();
+                    }
+                    Ok(Message::Reset) => {
+                        file.set_len(0).unwrap();
                     }
                     Err(err) => {
                         error!("Got error while recv() from Channel: {:?}", err);
