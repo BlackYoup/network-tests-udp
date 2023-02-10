@@ -120,22 +120,22 @@ impl Server {
 
                 if sequence != sequence_recv {
                     // We just received a packet that was missing, do not treat as lost
+                    // We don't increase our sequence since we already increased it in the else{} block below
                     if loss.contains_key(&sequence_recv) {
                         warn!("Packet with sequence={} is out of order", sequence);
                         loss.remove(&sequence_recv);
                     } else {
-                        // We lost at least one packet (at least for now), track it
-                        let total_losses: i64 = sequence_recv as i64 - sequence as i64;
-                        if total_losses <= 0 {
-                            unimplemented!("We lost 0 or more than possible?");
-                        }
+                        // Compute the number of losses
+                        // If we are here, it means that we received a higher sequence than our current sequence
+                        // Otherwise we would have ended up into the previous if{} block
+                        let total_losses = sequence - sequence_recv;
 
                         for i in 0..total_losses {
-                            loss.insert(sequence + i as u64, Instant::now());
+                            loss.insert(sequence + i, Instant::now());
                         }
 
                         // Let's increase or sequence so that following packet do not appear as Out of Order
-                        sequence_recv += total_losses as u64;
+                        sequence_recv += total_losses;
                     }
                 } else {
                     sequence_recv += 1;
