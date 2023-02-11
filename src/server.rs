@@ -58,6 +58,7 @@ impl Server {
             let socket = UdpSocket::bind(config.remote).unwrap();
             // Expected next sequence
             let mut sequence_recv = 0;
+            let mut packet_number = 0;
             // Keep the last received remote to detect if the client was restarted
             let mut remote_recv: Option<SocketAddr> = None;
             let mut loss: HashMap<u64, Instant> = HashMap::new();
@@ -95,6 +96,7 @@ impl Server {
                 if sequence == 0 {
                     // Our client ended its previous chunk, reset our sequence
                     sequence_recv = 0;
+                    packet_number = 0;
                     if let Some(old_remote) = remote_recv {
                         if old_remote.port() != remote.port() {
                             remote_recv = Some(remote);
@@ -110,6 +112,7 @@ impl Server {
                 let packet = Packet {
                     sequence_receiver: sequence_recv,
                     sequence_sender: sequence,
+                    packet_number,
                     received_at,
                     sent_at: date,
                     recv_size: size,
@@ -144,6 +147,7 @@ impl Server {
                     sequence_recv += 1;
                 };
 
+                packet_number += 1;
                 log_tx.send(Message::Packet(packet)).unwrap();
             }
         })
