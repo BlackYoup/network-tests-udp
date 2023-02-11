@@ -27,6 +27,7 @@ impl Client {
                         "Sent {} paquets, waiting 1 second before next batch",
                         sequence
                     );
+                    sequence = 0;
                     std::thread::sleep(std::time::Duration::from_secs(1));
                 }
                 let mut buf = BytesMut::new();

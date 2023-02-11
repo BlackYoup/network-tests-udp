@@ -58,14 +58,22 @@ impl Server {
             let socket = UdpSocket::bind(config.remote).unwrap();
             // Expected next sequence
             let mut sequence_recv = 0;
-            let mut total_received_packets = 0;
             // Keep the last received remote to detect if the client was restarted
             let mut remote_recv: Option<SocketAddr> = None;
             let mut loss: HashMap<u64, Instant> = HashMap::new();
 
             loop {
+                let mut buf: BytesMut = BytesMut::zeroed(65536);
+                let (size, remote) = socket.recv_from(&mut buf).unwrap();
+                let received_at = Utc::now();
+                debug!("Received packet: size={}, remote={:?}", size, remote);
+                trace!("content={:?}", buf);
+
+                // Print those lost packets once we received a new one but
+                // before we start printing the new ones
+                // Consider we lost the packets after 500ms
                 loss.retain(|&lost_seq, lost_at| {
-                    if lost_at.elapsed() > std::time::Duration::from_secs(1) {
+                    if lost_at.elapsed() > std::time::Duration::from_millis(500) {
                         warn!("Packet with sequence {lost_seq} has been lost");
                         log_tx.send(Message::Lost(lost_seq)).unwrap();
                         false
@@ -73,12 +81,6 @@ impl Server {
                         true
                     }
                 });
-
-                let mut buf: BytesMut = BytesMut::zeroed(65536);
-                let (size, remote) = socket.recv_from(&mut buf).unwrap();
-                let received_at = Utc::now();
-                debug!("Received packet: size={}, remote={:?}", size, remote);
-                trace!("content={:?}", buf);
 
                 let mut buffer = buf.freeze();
                 let sequence = buffer.get_u64();
@@ -91,10 +93,10 @@ impl Server {
                 );
 
                 if sequence == 0 {
+                    // Our client ended its previous chunk, reset our sequence
+                    sequence_recv = 0;
                     if let Some(old_remote) = remote_recv {
                         if old_remote.port() != remote.port() {
-                            // Our client got restarted, reset our sequence
-                            sequence_recv = 0;
                             remote_recv = Some(remote);
                             log_tx.send(Message::Reset).unwrap();
                         }
@@ -105,8 +107,8 @@ impl Server {
 
                 debug!("Packet: sequence={sequence}, sequence_recv={sequence_recv}");
 
-                let mut packet = Packet {
-                    sequence_receiver: total_received_packets,
+                let packet = Packet {
+                    sequence_receiver: sequence_recv,
                     sequence_sender: sequence,
                     received_at,
                     sent_at: date,
@@ -127,7 +129,7 @@ impl Server {
                         let total_losses = sequence - sequence_recv;
                         debug!("Total losses={total_losses}, sequence={sequence}, sequence_recv={sequence_recv}");
                         if total_losses > 1_000_000 {
-                            panic!();
+                            panic!("Underflow occuring");
                         }
 
                         for i in 0..total_losses {
@@ -136,7 +138,6 @@ impl Server {
 
                         // Let's increase or sequence so that following packet do not appear as Out of Order
                         sequence_recv += total_losses;
-                        packet.sequence_receiver = sequence_recv;
                         sequence_recv += 1;
                     }
                 } else {
