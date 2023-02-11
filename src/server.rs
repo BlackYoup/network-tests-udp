@@ -144,8 +144,6 @@ impl Server {
                     sequence_recv += 1;
                 };
 
-                total_received_packets += 1;
-
                 log_tx.send(Message::Packet(packet)).unwrap();
             }
         })
