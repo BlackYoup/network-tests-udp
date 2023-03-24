@@ -79,6 +79,7 @@ impl Server {
                     // Print those lost packets once we received a new one but
                     // before we start printing the new ones
                     // Consider we lost the packets after 500ms
+                    let before_loss = loss.len();
                     loss.retain(|&lost_seq, lost_at| {
                         if lost_at.elapsed() > std::time::Duration::from_millis(500) {
                             //warn!("Packet with sequence {lost_seq} has been lost");
@@ -88,6 +89,7 @@ impl Server {
                             true
                         }
                     });
+                    warn!("Lost {} packets", before_loss - loss.len());
                     // Our client ended its previous chunk, reset our sequence
                     sequence_recv = 0;
                     packet_number = 0;
