@@ -9,10 +9,10 @@ use std::{
     time::Instant,
 };
 
-use bytes::{Buf, BytesMut};
+use bytes::{Buf, BytesMut, Bytes};
 use chrono::{DateTime, NaiveDateTime, Utc};
 use log::{debug, error, trace, warn};
-use nix::sched::CloneFlags;
+use nix::{sched::CloneFlags};
 
 use crate::{config::Config, packet::Packet};
 
@@ -33,12 +33,15 @@ impl Server {
 
     pub fn run(&self) {
         self.setup_ns();
-        let (tx, rx) = channel();
-        let handle_udp = self.run_udp_server(tx);
-        let handle_log_server = self.run_log_server(rx);
+        let (tx_log, rx_log) = channel();
+        let (tx_packets, rx_packets) = channel();
+        let handle_udp = self.run_udp_server(tx_packets);
+        let handle_log_server = self.run_log_server(rx_log);
+        let handle_packets = self.handle_packets(rx_packets, tx_log);
 
         handle_log_server.join().unwrap();
         handle_udp.join().unwrap();
+        handle_packets.join().unwrap();
     }
 
     fn setup_ns(&self) {
@@ -52,10 +55,8 @@ impl Server {
         }
     }
 
-    fn run_udp_server(&self, log_tx: Sender<Message>) -> JoinHandle<()> {
-        let config = self.config.clone();
+    fn handle_packets(&self, rx_packets: Receiver<(Bytes, usize, SocketAddr, DateTime<Utc>)>, tx_log: Sender<Message>) -> JoinHandle<()> {
         std::thread::spawn(move || {
-            let socket = UdpSocket::bind(config.remote).unwrap();
             // Expected next sequence
             let mut sequence_recv = 0;
             let mut packet_number = 0;
@@ -64,13 +65,7 @@ impl Server {
             let mut loss: HashMap<u64, Instant> = HashMap::new();
 
             loop {
-                let mut buf: BytesMut = BytesMut::zeroed(65536);
-                let (size, remote) = socket.recv_from(&mut buf).unwrap();
-                let received_at = Utc::now();
-                debug!("Received packet: size={}, remote={:?}", size, remote);
-                trace!("content={:?}", buf);
-
-                let mut buffer = buf.freeze();
+                let (mut buffer, size, remote, received_at) = rx_packets.recv().unwrap();
                 let sequence = buffer.get_u64();
                 let date = buffer.get_u64();
                 let secs = date / 1_000_000_000;
@@ -87,7 +82,7 @@ impl Server {
                     loss.retain(|&lost_seq, lost_at| {
                         if lost_at.elapsed() > std::time::Duration::from_millis(500) {
                             //warn!("Packet with sequence {lost_seq} has been lost");
-                            log_tx.send(Message::Lost(lost_seq)).unwrap();
+                            tx_log.send(Message::Lost(lost_seq)).unwrap();
                             false
                         } else {
                             true
@@ -99,7 +94,7 @@ impl Server {
                     if let Some(old_remote) = remote_recv {
                         if old_remote.port() != remote.port() {
                             remote_recv = Some(remote);
-                            log_tx.send(Message::Reset).unwrap();
+                            tx_log.send(Message::Reset).unwrap();
                         }
                     } else {
                         remote_recv = Some(remote);
@@ -147,7 +142,25 @@ impl Server {
                 };
 
                 packet_number += 1;
-                log_tx.send(Message::Packet(packet)).unwrap();
+                tx_log.send(Message::Packet(packet)).unwrap();
+            }
+        })
+    }
+
+    fn run_udp_server(&self, rx_packets: Sender<(Bytes, usize, SocketAddr, DateTime<Utc>)>) -> JoinHandle<()> {
+        let config = self.config.clone();
+        std::thread::spawn(move || {
+            let socket = UdpSocket::bind(config.remote).unwrap();
+            loop {
+                let mut buf: BytesMut = BytesMut::with_capacity(config.packet_size);
+                unsafe { buf.set_len(config.packet_size) };
+                let (size, remote) = socket.recv_from(&mut buf).unwrap();
+                let received_at = Utc::now();
+                debug!("Received packet: size={}, remote={:?}", size, remote);
+                trace!("content={:?}", buf);
+
+                let buffer = buf.freeze();
+                rx_packets.send((buffer, size, remote, received_at)).unwrap();
             }
         })
     }
